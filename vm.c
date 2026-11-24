@@ -265,6 +265,18 @@ static void initialize_memory(VirtualMemory *memory, enum Policy page_policy, en
 
 static size_t select_victim_frame(VirtualMemory *memory)
 {
+    if (memory->page_policy == POLICY_LRU) {
+        size_t victim = 0;
+
+        for (size_t i = 1; i < FRAME_COUNT; i++) {
+            if (memory->frames[i].last_used < memory->frames[victim].last_used) {
+                victim = i;
+            }
+        }
+
+        return victim;
+    }
+
     size_t victim = memory->fifo_next_frame;
     memory->fifo_next_frame = (memory->fifo_next_frame + 1) % FRAME_COUNT;
     return victim;
@@ -391,11 +403,6 @@ int main(int argc, char **argv)
 
     if (!parse_policy(argv[3], &tlb_policy)) {
         fprintf(stderr, "error: invalid TLB algorithm '%s' (expected fifo or lru)\n", argv[3]);
-        return EXIT_FAILURE;
-    }
-
-    if (page_policy == POLICY_LRU) {
-        fprintf(stderr, "error: LRU page replacement is not implemented yet\n");
         return EXIT_FAILURE;
     }
 
