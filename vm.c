@@ -25,6 +25,10 @@
 
 #define TLB_SIZE 16
 
+#ifndef ENABLE_TLB
+#define ENABLE_TLB 1
+#endif
+
 #ifndef TLB_USE_THREADS
 #define TLB_USE_THREADS 1
 #endif
@@ -63,7 +67,7 @@ typedef struct {
     unsigned long last_used;
 } TlbEntry;
 
-#if TLB_USE_THREADS
+#if ENABLE_TLB && TLB_USE_THREADS
 typedef struct {
     const TlbEntry *entry;
     int index;
@@ -310,6 +314,7 @@ static size_t select_victim_frame(VirtualMemory *memory)
     return victim;
 }
 
+#if ENABLE_TLB
 static bool find_tlb_slot(const VirtualMemory *memory, int page, int *slot)
 {
 #if TLB_USE_THREADS
@@ -399,16 +404,18 @@ static int insert_tlb_entry(VirtualMemory *memory, int page, size_t frame)
 
     return (int)slot;
 }
+#endif
 
 static bool translate_address(VirtualMemory *memory, int virtual_address, size_t *physical_address, int *value, int *tlb_slot)
 {
     size_t page = (size_t)virtual_address / PAGE_SIZE;
     size_t offset = (size_t)virtual_address % PAGE_SIZE;
     size_t frame;
-    int slot;
+    int slot = -1;
 
     memory->tick++;
 
+#if ENABLE_TLB
     if (!find_tlb_slot(memory, (int)page, &slot)) {
         return false;
     }
@@ -421,7 +428,9 @@ static bool translate_address(VirtualMemory *memory, int virtual_address, size_t
         if (memory->tlb_policy == POLICY_LRU) {
             memory->tlb[slot].last_used = memory->tick;
         }
-    } else {
+    } else
+#endif
+    {
         if (memory->page_table[page].valid) {
             frame = (size_t)memory->page_table[page].frame;
             memory->frames[frame].last_used = memory->tick;
@@ -437,11 +446,13 @@ static bool translate_address(VirtualMemory *memory, int virtual_address, size_t
                 int victim_page = memory->frames[frame].page;
                 memory->page_table[victim_page].valid = false;
 
+#if ENABLE_TLB
                 for (size_t i = 0; i < TLB_SIZE; i++) {
                     if (memory->tlb[i].valid && memory->tlb[i].page == victim_page) {
                         memory->tlb[i].valid = false;
                     }
                 }
+#endif
             }
 
             memory->frames[frame].page = (int)page;
@@ -453,7 +464,9 @@ static bool translate_address(VirtualMemory *memory, int virtual_address, size_t
             memory->page_table[page].valid = true;
         }
 
+#if ENABLE_TLB
         slot = insert_tlb_entry(memory, (int)page, frame);
+#endif
     }
 
     *physical_address = frame * PAGE_SIZE + offset;
