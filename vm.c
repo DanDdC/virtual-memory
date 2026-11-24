@@ -1,14 +1,24 @@
 #define _POSIX_C_SOURCE 200809L
 
+#include <ctype.h>
+#include <errno.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <strings.h>
 
 enum Policy {
     POLICY_FIFO,
     POLICY_LRU
 };
+
+typedef struct {
+    int *values;
+    size_t count;
+    size_t capacity;
+} AddressList;
 
 static void print_usage(const char *program)
 {
@@ -31,6 +41,110 @@ static bool parse_policy(const char *text, enum Policy *policy)
     return false;
 }
 
+static void free_addresses(AddressList *addresses)
+{
+    free(addresses->values);
+    addresses->values = NULL;
+    addresses->count = 0;
+    addresses->capacity = 0;
+}
+
+static bool append_address(AddressList *addresses, int value)
+{
+    if (addresses->count == addresses->capacity) {
+        size_t new_capacity = addresses->capacity == 0 ? 1024 : addresses->capacity * 2;
+
+        if (new_capacity < addresses->capacity || new_capacity > SIZE_MAX / sizeof *addresses->values) {
+            fprintf(stderr, "error: too many logical addresses\n");
+            return false;
+        }
+
+        int *new_values = realloc(addresses->values, new_capacity * sizeof *new_values);
+        if (new_values == NULL) {
+            fprintf(stderr, "error: out of memory while storing logical addresses\n");
+            return false;
+        }
+
+        addresses->values = new_values;
+        addresses->capacity = new_capacity;
+    }
+
+    addresses->values[addresses->count] = value;
+    addresses->count++;
+    return true;
+}
+
+static bool read_addresses(const char *path, AddressList *addresses)
+{
+    FILE *file = fopen(path, "r");
+    if (file == NULL) {
+        fprintf(stderr, "error: cannot open address file '%s': %s\n", path, strerror(errno));
+        return false;
+    }
+
+    char *line = NULL;
+    size_t line_capacity = 0;
+    size_t line_number = 0;
+    bool success = true;
+
+    while (getline(&line, &line_capacity, file) != -1) {
+        line_number++;
+
+        char *cursor = line;
+        while (isspace((unsigned char)*cursor)) {
+            cursor++;
+        }
+
+        char *end = NULL;
+        errno = 0;
+        long value = strtol(cursor, &end, 10);
+
+        if (end == cursor || errno == ERANGE || value < 0 || value > 65535) {
+            fprintf(stderr, "error: %s:%zu: invalid logical address\n", path, line_number);
+            success = false;
+            break;
+        }
+
+        while (isspace((unsigned char)*end)) {
+            end++;
+        }
+
+        if (*end != '\0') {
+            fprintf(stderr, "error: %s:%zu: invalid logical address\n", path, line_number);
+            success = false;
+            break;
+        }
+
+        if (!append_address(addresses, (int)value)) {
+            success = false;
+            break;
+        }
+    }
+
+    if (success && !feof(file)) {
+        fprintf(stderr, "error: failed to read address file '%s'\n", path);
+        success = false;
+    }
+
+    if (success && addresses->count == 0) {
+        fprintf(stderr, "error: address file '%s' contains no logical addresses\n", path);
+        success = false;
+    }
+
+    free(line);
+
+    if (fclose(file) != 0) {
+        fprintf(stderr, "error: failed to close address file '%s': %s\n", path, strerror(errno));
+        success = false;
+    }
+
+    if (!success) {
+        free_addresses(addresses);
+    }
+
+    return success;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 4) {
@@ -51,8 +165,14 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
+    AddressList addresses = {0};
+    if (!read_addresses(argv[1], &addresses)) {
+        return EXIT_FAILURE;
+    }
+
     (void)page_policy;
     (void)tlb_policy;
 
+    free_addresses(&addresses);
     return EXIT_SUCCESS;
 }
