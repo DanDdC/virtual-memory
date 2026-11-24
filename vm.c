@@ -293,10 +293,34 @@ static int find_tlb_slot(const VirtualMemory *memory, int page)
     return -1;
 }
 
-static int insert_tlb_entry(VirtualMemory *memory, int page, size_t frame)
+static size_t select_tlb_slot(VirtualMemory *memory)
 {
+    if (memory->tlb_policy == POLICY_LRU) {
+        for (size_t i = 0; i < TLB_SIZE; i++) {
+            if (!memory->tlb[i].valid) {
+                return i;
+            }
+        }
+
+        size_t victim = 0;
+
+        for (size_t i = 1; i < TLB_SIZE; i++) {
+            if (memory->tlb[i].last_used < memory->tlb[victim].last_used) {
+                victim = i;
+            }
+        }
+
+        return victim;
+    }
+
     size_t slot = memory->tlb_next_slot;
     memory->tlb_next_slot = (memory->tlb_next_slot + 1) % TLB_SIZE;
+    return slot;
+}
+
+static int insert_tlb_entry(VirtualMemory *memory, int page, size_t frame)
+{
+    size_t slot = select_tlb_slot(memory);
 
     memory->tlb[slot].page = page;
     memory->tlb[slot].frame = (int)frame;
@@ -320,6 +344,10 @@ static void translate_address(VirtualMemory *memory, int virtual_address, size_t
         memory->tlb_hits++;
         frame = (size_t)memory->tlb[slot].frame;
         memory->frames[frame].last_used = memory->tick;
+
+        if (memory->tlb_policy == POLICY_LRU) {
+            memory->tlb[slot].last_used = memory->tick;
+        }
     } else {
         if (memory->page_table[page].valid) {
             frame = (size_t)memory->page_table[page].frame;
@@ -412,11 +440,6 @@ int main(int argc, char **argv)
 
     if (!parse_policy(argv[3], &tlb_policy)) {
         fprintf(stderr, "error: invalid TLB algorithm '%s' (expected fifo or lru)\n", argv[3]);
-        return EXIT_FAILURE;
-    }
-
-    if (tlb_policy == POLICY_LRU) {
-        fprintf(stderr, "error: LRU TLB replacement is not implemented yet\n");
         return EXIT_FAILURE;
     }
 
