@@ -9,6 +9,11 @@
 #include <string.h>
 #include <strings.h>
 
+#define PAGE_SIZE 256
+#define PAGE_COUNT 256
+#define BACKING_STORE_SIZE (PAGE_COUNT * PAGE_SIZE)
+#define BACKING_STORE_PATH "BACKING_STORE.bin"
+
 enum Policy {
     POLICY_FIFO,
     POLICY_LRU
@@ -145,6 +150,44 @@ static bool read_addresses(const char *path, AddressList *addresses)
     return success;
 }
 
+static bool load_backing_store(const char *path, unsigned char *store)
+{
+    FILE *file = fopen(path, "rb");
+    if (file == NULL) {
+        fprintf(stderr, "error: cannot open backing store '%s': %s\n", path, strerror(errno));
+        return false;
+    }
+
+    bool success = true;
+    size_t bytes_read = fread(store, 1, BACKING_STORE_SIZE, file);
+
+    if (bytes_read != BACKING_STORE_SIZE) {
+        if (ferror(file)) {
+            fprintf(stderr, "error: failed to read backing store '%s'\n", path);
+        } else {
+            fprintf(stderr, "error: backing store '%s' must be exactly %d bytes\n", path, BACKING_STORE_SIZE);
+        }
+        success = false;
+    } else {
+        int extra = fgetc(file);
+
+        if (extra != EOF) {
+            fprintf(stderr, "error: backing store '%s' must be exactly %d bytes\n", path, BACKING_STORE_SIZE);
+            success = false;
+        } else if (ferror(file)) {
+            fprintf(stderr, "error: failed to read backing store '%s'\n", path);
+            success = false;
+        }
+    }
+
+    if (fclose(file) != 0) {
+        fprintf(stderr, "error: failed to close backing store '%s': %s\n", path, strerror(errno));
+        success = false;
+    }
+
+    return success;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 4) {
@@ -170,9 +213,23 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
+    unsigned char *backing_store = malloc(BACKING_STORE_SIZE);
+    if (backing_store == NULL) {
+        fprintf(stderr, "error: out of memory while loading the backing store\n");
+        free_addresses(&addresses);
+        return EXIT_FAILURE;
+    }
+
+    if (!load_backing_store(BACKING_STORE_PATH, backing_store)) {
+        free(backing_store);
+        free_addresses(&addresses);
+        return EXIT_FAILURE;
+    }
+
     (void)page_policy;
     (void)tlb_policy;
 
+    free(backing_store);
     free_addresses(&addresses);
     return EXIT_SUCCESS;
 }
