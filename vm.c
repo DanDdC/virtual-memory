@@ -332,6 +332,15 @@ static void translate_address(VirtualMemory *memory, int virtual_address, size_t
                 memory->next_free_frame++;
             } else {
                 frame = select_victim_frame(memory);
+
+                int victim_page = memory->frames[frame].page;
+                memory->page_table[victim_page].valid = false;
+
+                for (size_t i = 0; i < TLB_SIZE; i++) {
+                    if (memory->tlb[i].valid && memory->tlb[i].page == victim_page) {
+                        memory->tlb[i].valid = false;
+                    }
+                }
             }
 
             memory->frames[frame].page = (int)page;
