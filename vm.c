@@ -2,6 +2,8 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -20,6 +22,10 @@
 #endif
 
 #define TLB_SIZE 16
+
+#ifndef TLB_USE_THREADS
+#define TLB_USE_THREADS 1
+#endif
 
 #if FRAME_COUNT > PAGE_COUNT
 #error "FRAME_COUNT cannot exceed PAGE_COUNT"
@@ -54,6 +60,26 @@ typedef struct {
     bool valid;
     unsigned long last_used;
 } TlbEntry;
+
+#if TLB_USE_THREADS
+typedef struct {
+    const TlbEntry *entry;
+    int index;
+    int page;
+    atomic_int *found_slot;
+} TlbSearch;
+
+static void *search_tlb_entry(void *argument)
+{
+    TlbSearch *search = argument;
+
+    if (search->entry->valid && search->entry->page == search->page) {
+        atomic_store(search->found_slot, search->index);
+    }
+
+    return NULL;
+}
+#endif
 
 typedef struct {
     unsigned char backing_store[BACKING_STORE_SIZE];
@@ -282,15 +308,57 @@ static size_t select_victim_frame(VirtualMemory *memory)
     return victim;
 }
 
-static int find_tlb_slot(const VirtualMemory *memory, int page)
+static bool find_tlb_slot(const VirtualMemory *memory, int page, int *slot)
 {
-    for (size_t i = 0; i < TLB_SIZE; i++) {
-        if (memory->tlb[i].valid && memory->tlb[i].page == page) {
-            return (int)i;
+#if TLB_USE_THREADS
+    atomic_int found;
+    TlbSearch searches[TLB_SIZE];
+    pthread_t threads[TLB_SIZE];
+    int created = 0;
+    bool success = true;
+
+    atomic_init(&found, -1);
+
+    for (int i = 0; i < TLB_SIZE; i++) {
+        searches[i].entry = &memory->tlb[i];
+        searches[i].index = i;
+        searches[i].page = page;
+        searches[i].found_slot = &found;
+
+        if (pthread_create(&threads[i], NULL, search_tlb_entry, &searches[i]) != 0) {
+            fprintf(stderr, "error: failed to create TLB search thread\n");
+            success = false;
+            break;
+        }
+
+        created++;
+    }
+
+    for (int i = 0; i < created; i++) {
+        if (pthread_join(threads[i], NULL) != 0) {
+            fprintf(stderr, "error: failed to join TLB search thread\n");
+            success = false;
         }
     }
 
-    return -1;
+    if (!success) {
+        return false;
+    }
+
+    *slot = atomic_load(&found);
+    return true;
+#else
+    *slot = -1;
+
+    for (int i = 0; i < TLB_SIZE; i++) {
+        if (memory->tlb[i].valid && memory->tlb[i].page == page) {
+            *slot = i;
+            break;
+        }
+    }
+
+    return true;
+#endif
 }
 
 static size_t select_tlb_slot(VirtualMemory *memory)
@@ -330,7 +398,7 @@ static int insert_tlb_entry(VirtualMemory *memory, int page, size_t frame)
     return (int)slot;
 }
 
-static void translate_address(VirtualMemory *memory, int virtual_address, size_t *physical_address, int *value, int *tlb_slot)
+static bool translate_address(VirtualMemory *memory, int virtual_address, size_t *physical_address, int *value, int *tlb_slot)
 {
     size_t page = (size_t)virtual_address / PAGE_SIZE;
     size_t offset = (size_t)virtual_address % PAGE_SIZE;
@@ -338,7 +406,10 @@ static void translate_address(VirtualMemory *memory, int virtual_address, size_t
     int slot;
 
     memory->tick++;
-    slot = find_tlb_slot(memory, (int)page);
+
+    if (!find_tlb_slot(memory, (int)page, &slot)) {
+        return false;
+    }
 
     if (slot >= 0) {
         memory->tlb_hits++;
@@ -386,6 +457,7 @@ static void translate_address(VirtualMemory *memory, int virtual_address, size_t
     *physical_address = frame * PAGE_SIZE + offset;
     *value = memory->frames[frame].data[offset];
     *tlb_slot = slot;
+    return true;
 }
 
 static bool write_output(VirtualMemory *memory, const AddressList *addresses)
@@ -401,7 +473,11 @@ static bool write_output(VirtualMemory *memory, const AddressList *addresses)
         int value;
         int tlb_slot;
 
-        translate_address(memory, addresses->values[i], &physical_address, &value, &tlb_slot);
+        if (!translate_address(memory, addresses->values[i], &physical_address, &value, &tlb_slot)) {
+            fclose(file);
+            return false;
+        }
+
         fprintf(file, "Virtual address: %d TLB: %d Physical address: %zu Value: %d\n",
                 addresses->values[i], tlb_slot, physical_address, value);
     }
