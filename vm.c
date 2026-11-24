@@ -533,6 +533,12 @@ static bool write_output(VirtualMemory *memory, const AddressList *addresses)
     return true;
 }
 
+static void cleanup(VirtualMemory *memory, AddressList *addresses)
+{
+    free(memory);
+    free_addresses(addresses);
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 4) {
@@ -561,25 +567,22 @@ int main(int argc, char **argv)
     VirtualMemory *memory = calloc(1, sizeof *memory);
     if (memory == NULL) {
         fprintf(stderr, "error: out of memory while initializing virtual memory\n");
-        free_addresses(&addresses);
+        cleanup(memory, &addresses);
         return EXIT_FAILURE;
     }
 
     initialize_memory(memory, page_policy, tlb_policy);
 
     if (!load_backing_store(BACKING_STORE_PATH, memory->backing_store)) {
-        free(memory);
-        free_addresses(&addresses);
+        cleanup(memory, &addresses);
         return EXIT_FAILURE;
     }
 
     if (!write_output(memory, &addresses)) {
-        free(memory);
-        free_addresses(&addresses);
+        cleanup(memory, &addresses);
         return EXIT_FAILURE;
     }
 
-    free(memory);
-    free_addresses(&addresses);
+    cleanup(memory, &addresses);
     return EXIT_SUCCESS;
 }
