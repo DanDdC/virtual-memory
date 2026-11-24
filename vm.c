@@ -3,6 +3,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -16,6 +17,7 @@
 #define BACKING_STORE_SIZE (PAGE_COUNT * PAGE_SIZE)
 #define BACKING_STORE_PATH "BACKING_STORE.bin"
 #define OUTPUT_PATH "correct.txt"
+#define TEMP_OUTPUT_PATH "correct.txt.tmp"
 
 #ifndef FRAME_COUNT
 #define FRAME_COUNT 128
@@ -460,13 +462,24 @@ static bool translate_address(VirtualMemory *memory, int virtual_address, size_t
     return true;
 }
 
+static bool write_formatted(FILE *file, const char *format, ...)
+{
+    va_list arguments;
+    va_start(arguments, format);
+    int result = vfprintf(file, format, arguments);
+    va_end(arguments);
+    return result >= 0;
+}
+
 static bool write_output(VirtualMemory *memory, const AddressList *addresses)
 {
-    FILE *file = fopen(OUTPUT_PATH, "w");
+    FILE *file = fopen(TEMP_OUTPUT_PATH, "w");
     if (file == NULL) {
-        fprintf(stderr, "error: cannot open output file '%s': %s\n", OUTPUT_PATH, strerror(errno));
+        fprintf(stderr, "error: cannot open temporary output file '%s': %s\n", TEMP_OUTPUT_PATH, strerror(errno));
         return false;
     }
+
+    bool success = true;
 
     for (size_t i = 0; i < addresses->count; i++) {
         size_t physical_address;
@@ -474,25 +487,46 @@ static bool write_output(VirtualMemory *memory, const AddressList *addresses)
         int tlb_slot;
 
         if (!translate_address(memory, addresses->values[i], &physical_address, &value, &tlb_slot)) {
-            fclose(file);
-            return false;
+            success = false;
+            break;
         }
 
-        fprintf(file, "Virtual address: %d TLB: %d Physical address: %zu Value: %d\n",
-                addresses->values[i], tlb_slot, physical_address, value);
+        if (!write_formatted(file, "Virtual address: %d TLB: %d Physical address: %zu Value: %d\n",
+                             addresses->values[i], tlb_slot, physical_address, value)) {
+            fprintf(stderr, "error: failed to write output file '%s'\n", TEMP_OUTPUT_PATH);
+            success = false;
+            break;
+        }
     }
 
-    double page_fault_rate = (double)memory->page_faults / (double)addresses->count;
-    double tlb_hit_rate = (double)memory->tlb_hits / (double)addresses->count;
+    if (success) {
+        double page_fault_rate = (double)memory->page_faults / (double)addresses->count;
+        double tlb_hit_rate = (double)memory->tlb_hits / (double)addresses->count;
 
-    fprintf(file, "Number of Translated Addresses = %zu\n", addresses->count);
-    fprintf(file, "Page Faults = %lu\n", memory->page_faults);
-    fprintf(file, "Page Fault Rate = %.3f\n", page_fault_rate);
-    fprintf(file, "TLB Hits = %lu\n", memory->tlb_hits);
-    fprintf(file, "TLB Hit Rate = %.3f\n", tlb_hit_rate);
+        if (!write_formatted(file, "Number of Translated Addresses = %zu\n", addresses->count) ||
+            !write_formatted(file, "Page Faults = %lu\n", memory->page_faults) ||
+            !write_formatted(file, "Page Fault Rate = %.3f\n", page_fault_rate) ||
+            !write_formatted(file, "TLB Hits = %lu\n", memory->tlb_hits) ||
+            !write_formatted(file, "TLB Hit Rate = %.3f\n", tlb_hit_rate)) {
+            fprintf(stderr, "error: failed to write output file '%s'\n", TEMP_OUTPUT_PATH);
+            success = false;
+        }
+    }
 
     if (fclose(file) != 0) {
-        fprintf(stderr, "error: failed to close output file '%s': %s\n", OUTPUT_PATH, strerror(errno));
+        fprintf(stderr, "error: failed to close output file '%s': %s\n", TEMP_OUTPUT_PATH, strerror(errno));
+        success = false;
+    }
+
+    if (!success) {
+        remove(TEMP_OUTPUT_PATH);
+        return false;
+    }
+
+    if (rename(TEMP_OUTPUT_PATH, OUTPUT_PATH) != 0) {
+        fprintf(stderr, "error: failed to rename '%s' to '%s': %s\n",
+                TEMP_OUTPUT_PATH, OUTPUT_PATH, strerror(errno));
+        remove(TEMP_OUTPUT_PATH);
         return false;
     }
 
