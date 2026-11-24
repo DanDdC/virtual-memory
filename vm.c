@@ -14,6 +14,14 @@
 #define BACKING_STORE_SIZE (PAGE_COUNT * PAGE_SIZE)
 #define BACKING_STORE_PATH "BACKING_STORE.bin"
 
+#ifndef FRAME_COUNT
+#define FRAME_COUNT 128
+#endif
+
+#if FRAME_COUNT > PAGE_COUNT
+#error "FRAME_COUNT cannot exceed PAGE_COUNT"
+#endif
+
 enum Policy {
     POLICY_FIFO,
     POLICY_LRU
@@ -24,6 +32,29 @@ typedef struct {
     size_t count;
     size_t capacity;
 } AddressList;
+
+typedef struct {
+    int frame;
+    bool valid;
+} PageTableEntry;
+
+typedef struct {
+    int page;
+    bool occupied;
+    unsigned long last_used;
+    signed char data[PAGE_SIZE];
+} Frame;
+
+typedef struct {
+    unsigned char backing_store[BACKING_STORE_SIZE];
+    PageTableEntry page_table[PAGE_COUNT];
+    Frame frames[FRAME_COUNT];
+    enum Policy page_policy;
+    size_t next_free_frame;
+    size_t fifo_next_frame;
+    unsigned long tick;
+    unsigned long page_faults;
+} VirtualMemory;
 
 static void print_usage(const char *program)
 {
@@ -188,6 +219,67 @@ static bool load_backing_store(const char *path, unsigned char *store)
     return success;
 }
 
+static void initialize_memory(VirtualMemory *memory, enum Policy page_policy)
+{
+    memory->page_policy = page_policy;
+    memory->next_free_frame = 0;
+    memory->fifo_next_frame = 0;
+    memory->tick = 0;
+    memory->page_faults = 0;
+
+    for (size_t i = 0; i < PAGE_COUNT; i++) {
+        memory->page_table[i].frame = 0;
+        memory->page_table[i].valid = false;
+    }
+
+    for (size_t i = 0; i < FRAME_COUNT; i++) {
+        memory->frames[i].page = 0;
+        memory->frames[i].occupied = false;
+        memory->frames[i].last_used = 0;
+    }
+}
+
+static size_t select_victim_frame(VirtualMemory *memory)
+{
+    size_t victim = memory->fifo_next_frame;
+    memory->fifo_next_frame = (memory->fifo_next_frame + 1) % FRAME_COUNT;
+    return victim;
+}
+
+static void translate_address(VirtualMemory *memory, int virtual_address, size_t *physical_address, int *value)
+{
+    size_t page = (size_t)virtual_address / PAGE_SIZE;
+    size_t offset = (size_t)virtual_address % PAGE_SIZE;
+    size_t frame;
+
+    memory->tick++;
+
+    if (memory->page_table[page].valid) {
+        frame = (size_t)memory->page_table[page].frame;
+        memory->frames[frame].last_used = memory->tick;
+    } else {
+        memory->page_faults++;
+
+        if (memory->next_free_frame < FRAME_COUNT) {
+            frame = memory->next_free_frame;
+            memory->next_free_frame++;
+        } else {
+            frame = select_victim_frame(memory);
+        }
+
+        memory->frames[frame].page = (int)page;
+        memory->frames[frame].occupied = true;
+        memory->frames[frame].last_used = memory->tick;
+        memcpy(memory->frames[frame].data, memory->backing_store + page * PAGE_SIZE, PAGE_SIZE);
+
+        memory->page_table[page].frame = (int)frame;
+        memory->page_table[page].valid = true;
+    }
+
+    *physical_address = frame * PAGE_SIZE + offset;
+    *value = memory->frames[frame].data[offset];
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 4) {
@@ -208,28 +300,43 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
+    if (page_policy == POLICY_LRU) {
+        fprintf(stderr, "error: LRU page replacement is not implemented yet\n");
+        return EXIT_FAILURE;
+    }
+
     AddressList addresses = {0};
     if (!read_addresses(argv[1], &addresses)) {
         return EXIT_FAILURE;
     }
 
-    unsigned char *backing_store = malloc(BACKING_STORE_SIZE);
-    if (backing_store == NULL) {
-        fprintf(stderr, "error: out of memory while loading the backing store\n");
+    VirtualMemory *memory = calloc(1, sizeof *memory);
+    if (memory == NULL) {
+        fprintf(stderr, "error: out of memory while initializing virtual memory\n");
         free_addresses(&addresses);
         return EXIT_FAILURE;
     }
 
-    if (!load_backing_store(BACKING_STORE_PATH, backing_store)) {
-        free(backing_store);
+    initialize_memory(memory, page_policy);
+
+    if (!load_backing_store(BACKING_STORE_PATH, memory->backing_store)) {
+        free(memory);
         free_addresses(&addresses);
         return EXIT_FAILURE;
     }
 
-    (void)page_policy;
+    for (size_t i = 0; i < addresses.count; i++) {
+        size_t physical_address;
+        int value;
+
+        translate_address(memory, addresses.values[i], &physical_address, &value);
+        (void)physical_address;
+        (void)value;
+    }
+
     (void)tlb_policy;
 
-    free(backing_store);
+    free(memory);
     free_addresses(&addresses);
     return EXIT_SUCCESS;
 }
