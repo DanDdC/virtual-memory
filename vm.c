@@ -17,7 +17,6 @@
 #define BACKING_STORE_SIZE (PAGE_COUNT * PAGE_SIZE)
 #define BACKING_STORE_PATH "BACKING_STORE.bin"
 #define OUTPUT_PATH "correct.txt"
-#define TEMP_OUTPUT_PATH "correct.txt.tmp"
 
 #ifndef FRAME_COUNT
 #define FRAME_COUNT 128
@@ -486,9 +485,9 @@ static bool write_formatted(FILE *file, const char *format, ...)
 
 static bool write_output(VirtualMemory *memory, const AddressList *addresses)
 {
-    FILE *file = fopen(TEMP_OUTPUT_PATH, "w");
+    FILE *file = fopen(OUTPUT_PATH, "w");
     if (file == NULL) {
-        fprintf(stderr, "error: cannot open temporary output file '%s': %s\n", TEMP_OUTPUT_PATH, strerror(errno));
+        fprintf(stderr, "error: cannot open output file '%s': %s\n", OUTPUT_PATH, strerror(errno));
         return false;
     }
 
@@ -506,7 +505,7 @@ static bool write_output(VirtualMemory *memory, const AddressList *addresses)
 
         if (!write_formatted(file, "Virtual address: %d TLB: %d Physical address: %zu Value: %d\n",
                              addresses->values[i], tlb_slot, physical_address, value)) {
-            fprintf(stderr, "error: failed to write output file '%s'\n", TEMP_OUTPUT_PATH);
+            fprintf(stderr, "error: failed to write output file '%s'\n", OUTPUT_PATH);
             success = false;
             break;
         }
@@ -521,25 +520,17 @@ static bool write_output(VirtualMemory *memory, const AddressList *addresses)
             !write_formatted(file, "Page Fault Rate = %.3f\n", page_fault_rate) ||
             !write_formatted(file, "TLB Hits = %lu\n", memory->tlb_hits) ||
             !write_formatted(file, "TLB Hit Rate = %.3f\n", tlb_hit_rate)) {
-            fprintf(stderr, "error: failed to write output file '%s'\n", TEMP_OUTPUT_PATH);
+            fprintf(stderr, "error: failed to write output file '%s'\n", OUTPUT_PATH);
             success = false;
         }
     }
 
     if (fclose(file) != 0) {
-        fprintf(stderr, "error: failed to close output file '%s': %s\n", TEMP_OUTPUT_PATH, strerror(errno));
+        fprintf(stderr, "error: failed to close output file '%s': %s\n", OUTPUT_PATH, strerror(errno));
         success = false;
     }
 
     if (!success) {
-        remove(TEMP_OUTPUT_PATH);
-        return false;
-    }
-
-    if (rename(TEMP_OUTPUT_PATH, OUTPUT_PATH) != 0) {
-        fprintf(stderr, "error: failed to rename '%s' to '%s': %s\n",
-                TEMP_OUTPUT_PATH, OUTPUT_PATH, strerror(errno));
-        remove(TEMP_OUTPUT_PATH);
         return false;
     }
 

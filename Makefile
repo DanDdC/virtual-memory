@@ -9,6 +9,6 @@ $(TARGET): vm.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $(TARGET) vm.c
 
 clean:
-	rm -f $(TARGET) correct.txt.tmp
+	rm -f $(TARGET)
 
 .PHONY: all clean

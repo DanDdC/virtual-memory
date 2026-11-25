@@ -21,7 +21,7 @@ make
 
 O binário gerado é `vm`.
 
-Para remover o binário e o arquivo temporário de saída:
+Para remover o binário:
 
 ```bash
 make clean
@@ -71,7 +71,7 @@ TLB Hit Rate = 0.054
 
 O campo `TLB` é o índice do slot usado na TLB, de 0 a 15. Em builds sem TLB, o campo é `-1`. O campo `Value` é lido como `signed char`.
 
-A saída é escrita primeiro em `correct.txt.tmp` e só é renomeada para `correct.txt` quando toda a gravação termina sem erro. Em caso de falha, o temporário é removido e o `correct.txt` anterior não é alterado.
+A saída é escrita diretamente em `correct.txt`, com checagem de abertura, escrita e fechamento. O programa não usa `rename` nem `unlink`; se a escrita falhar, pode restar um `correct.txt` parcial e o programa termina com código 1.
 
 O arquivo `correct.txt` fornecido pelo professor usa o mesmo nome da saída. Antes da primeira execução, preserve a referência:
 
@@ -130,9 +130,9 @@ Sempre rode `make clean` antes de trocar as flags; o `make` não detecta mudanç
 - Algoritmo de página ou de TLB diferente de `fifo` e `lru`.
 - Arquivo de endereços ausente, vazio, malformado ou com valor fora de 0 a 65535.
 - Backing store ausente, truncado ou com mais de 65536 bytes.
-- Falha ao abrir, escrever, fechar ou renomear o arquivo de saída.
+- Falha ao abrir, escrever ou fechar o arquivo de saída.
 
-Em todos esses casos o programa imprime uma mensagem em `stderr`, remove a saída parcial e termina com código 1.
+Em todos esses casos o programa imprime uma mensagem em `stderr` e termina com código 1; em falha de escrita, pode restar um `correct.txt` parcial.
 
 ## Estrutura
 
@@ -143,7 +143,7 @@ Em todos esses casos o programa imprime uma mensagem em `stderr`, remove a saíd
 
 ## Observações
 
-- A criação de 16 threads por acesso tem custo: no ambiente testado, a versão threaded levou cerca de 1,3 s e a sequencial cerca de 0,005 s para 1000 endereços. O objetivo da thread é simular a busca paralela exigida pelo enunciado, não reduzir o tempo total.
+- A criação de 16 threads por acesso tem custo: no ambiente testado, a versão threaded levou cerca de 0,8 s nesta validação (a primeira medição foi 1,3 s) e a sequencial cerca de 0,005 s para 1000 endereços. O objetivo da thread é simular a busca paralela exigida pelo enunciado, não reduzir o tempo total.
 - O build padrão com `lru fifo` deve ser comparado com a referência usando `cmp`; os demais fluxos têm estatísticas próprias.
 
 ## Ambiente testado
